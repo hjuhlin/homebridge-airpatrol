@@ -1,5 +1,5 @@
 {
-  "pluginAlias": "ExampleHomebridgePlugin",
+  "pluginAlias": "AirPatrol",
   "pluginType": "platform",
   "singular": true,
   "schema": {
@@ -9,7 +9,25 @@
         "title": "Name",
         "type": "string",
         "required": true,
-        "default": "Example Dynamic Platform"
+        "default": "AirPatrol"
+      },
+      "Token": {
+        "title": "Token",
+        "type": "string",
+        "required": true,
+        "default": ""
+      },  
+      "UpdateTime": {
+        "title": "Time in secondes between updates",
+        "type": "number",
+        "required": true,
+        "default": 60
+      },
+      "Debug": {
+        "title": "View debug messages",
+        "type": "boolean",
+        "required": true,
+        "default": false
       }
     }
   }

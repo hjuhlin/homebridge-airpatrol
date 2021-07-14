@@ -1,19 +1,17 @@
 import { API, DynamicPlatformPlugin, Logger, PlatformAccessory, PlatformConfig, Service, Characteristic } from 'homebridge';
+import { ThermometerAccessory } from './accessories/ThermometerAccessory';
+import { ThermostatAccessory } from './accessories/ThermostatAccessory';
 
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
-import { ExamplePlatformAccessory } from './platformAccessory';
+import { AirPatrolObject } from './types/AirPatrolObject';
+import { List2, ParingListObject } from './types/ParingListObject';
+import { HttpRequest } from './utils/httprequest';
 
-/**
- * HomebridgePlatform
- * This class is the main constructor for your plugin, this is where you should
- * parse the user config and discover/register accessories with Homebridge.
- */
-export class ExampleHomebridgePlatform implements DynamicPlatformPlugin {
+export class AirPatrolHomebridgePlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service = this.api.hap.Service;
   public readonly Characteristic: typeof Characteristic = this.api.hap.Characteristic;
-
-  // this is used to track restored cached accessories
   public readonly accessories: PlatformAccessory[] = [];
+  public Token = '';
 
   constructor(
     public readonly log: Logger,
@@ -22,95 +20,165 @@ export class ExampleHomebridgePlatform implements DynamicPlatformPlugin {
   ) {
     this.log.debug('Finished initializing platform:', this.config.name);
 
-    // When this event is fired it means Homebridge has restored all cached accessories from disk.
-    // Dynamic Platform plugins should only register new accessories after this event was fired,
-    // in order to ensure they weren't added to homebridge already. This event can also be used
-    // to start discovery of new accessories.
     this.api.on('didFinishLaunching', () => {
       log.debug('Executed didFinishLaunching callback');
-      // run the method to discover / register your devices as accessories
+
+      this.Token = this.config['Token'] as string;
+
       this.discoverDevices();
+      this.updateDeviceStatus();
+
+      setInterval(() => {
+        this.updateDeviceStatus();
+      }, (this.config['UpdateTime'] as number) * 1000);
+
     });
   }
 
-  /**
-   * This function is invoked when homebridge restores cached accessories from disk at startup.
-   * It should be used to setup event handlers for characteristics and update respective values.
-   */
+  updateDeviceStatus() {
+    const httpRequest = new HttpRequest(this.config, this.log);
+
+    this.accessories.forEach(accessory => {
+      const device = accessory.context.device as List2;
+
+      httpRequest.GetStatus(this.Token, device.id).then((results)=> {
+        if (results!==undefined) {
+          const aquaTempObject = <AirPatrolObject>results;
+
+          if (accessory.context.type==='thermometer') {
+            const thermostatService = accessory.getService(this.Service.TemperatureSensor);
+            const humiditySensorService = accessory.getService(this.Service.HumiditySensor);
+
+            if (thermostatService!==undefined) {
+              this.log.info('Update CurrentRoomTemperature', aquaTempObject.RoomTemp);
+              thermostatService.updateCharacteristic(this.Characteristic.CurrentTemperature, aquaTempObject.RoomTemp);
+            }
+
+            if (humiditySensorService!==undefined) {
+              this.log.info('Update CurrentRoomRelativeHumidity', aquaTempObject.RoomHumidity);
+              humiditySensorService.updateCharacteristic(this.Characteristic.CurrentRelativeHumidity, aquaTempObject.RoomHumidity);
+            }
+          }
+
+          if (accessory.context.type==='thermostat') {
+            const thermostatService = accessory.getService(this.Service.Thermostat);
+
+            if (thermostatService!==undefined) {
+              thermostatService.updateCharacteristic(this.Characteristic.CurrentTemperature, aquaTempObject.RoomTemp);
+              thermostatService.updateCharacteristic(this.Characteristic.TargetTemperature, aquaTempObject.ParametersData.PumpTemp);
+
+              const pumpMood = aquaTempObject.ParametersData.PumpMode;
+              let targetHeatingCoolingState = this.Characteristic.TargetHeatingCoolingState.OFF;
+
+              if (pumpMood==='cool') {
+                targetHeatingCoolingState= this.Characteristic.TargetHeatingCoolingState.COOL;
+              }
+
+              if (pumpMood==='auto') {
+                targetHeatingCoolingState= this.Characteristic.TargetHeatingCoolingState.AUTO;
+              }
+
+              if (pumpMood==='heat') {
+                targetHeatingCoolingState= this.Characteristic.TargetHeatingCoolingState.HEAT;
+              }
+
+              if (aquaTempObject.ParametersData.PumpPower === 'off') {
+                targetHeatingCoolingState= this.Characteristic.TargetHeatingCoolingState.OFF;
+              }
+
+              thermostatService.updateCharacteristic(this.Characteristic.TargetHeatingCoolingState, targetHeatingCoolingState);
+              thermostatService.updateCharacteristic(this.Characteristic.CurrentHeatingCoolingState, targetHeatingCoolingState);
+
+              this.log.info('Update TargetHeatingCoolingState / CurrentHeatingCoolingState ', targetHeatingCoolingState);
+            }
+          }
+        }
+      });
+    });
+  }
+
   configureAccessory(accessory: PlatformAccessory) {
     this.log.info('Loading accessory from cache:', accessory.displayName);
 
-    // add the restored accessory to the accessories cache so we can track if it has already been registered
     this.accessories.push(accessory);
   }
 
-  /**
-   * This is an example method showing how to register discovered accessories.
-   * Accessories must only be registered once, previously created accessories
-   * must not be registered again to prevent "duplicate UUID" errors.
-   */
   discoverDevices() {
 
-    // EXAMPLE ONLY
-    // A real plugin you would discover accessories from the local network, cloud services
-    // or a user-defined array in the platform config.
-    const exampleDevices = [
-      {
-        exampleUniqueId: 'ABCD',
-        exampleDisplayName: 'Bedroom',
-      },
-      {
-        exampleUniqueId: 'EFGH',
-        exampleDisplayName: 'Kitchen',
-      },
-    ];
+    // this.accessories.forEach(accessory => {
+    //   this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+    //   this.log.info('Removing existing accessory:', accessory.displayName);
+    // });
 
-    // loop over the discovered devices and register each one if it has not already been registered
-    for (const device of exampleDevices) {
+    const httpRequest = new HttpRequest(this.config, this.log);
 
-      // generate a unique id for the accessory this should be generated from
-      // something globally unique, but constant, for example, the device serial
-      // number or MAC address
-      const uuid = this.api.hap.uuid.generate(device.exampleUniqueId);
+    httpRequest.GetParingList(this.Token).then((results)=> {
 
-      // see if an accessory with the same uuid has already been registered and restored from
-      // the cached devices we stored in the `configureAccessory` method above
-      const existingAccessory = this.accessories.find(accessory => accessory.UUID === uuid);
+      if (results!==undefined) {
+        const airPatrolObject = <ParingListObject>results;
 
-      if (existingAccessory) {
-        // the accessory already exists
-        this.log.info('Restoring existing accessory from cache:', existingAccessory.displayName);
+        if (airPatrolObject.entities!==undefined) {
+          if (airPatrolObject.entities.pairings!==undefined) {
+            for (const device of airPatrolObject.entities.pairings.list) {
+              const thermometerObject = this.getAccessory(device, 'thermometer');
+              new ThermometerAccessory(this, thermometerObject.accessory, device, this.config, this.log, 'thermometer');
+              this.addOrRestorAccessory(thermometerObject.accessory, device.name, 'thermometer', thermometerObject.exists);
 
-        // if you need to update the accessory.context then you should run `api.updatePlatformAccessories`. eg.:
-        // existingAccessory.context.device = device;
-        // this.api.updatePlatformAccessories([existingAccessory]);
+              const thermostatObject = this.getAccessory(device, 'thermostat');
+              new ThermostatAccessory(this, thermostatObject.accessory, device, this.config, this.log, 'heater');
+              this.addOrRestorAccessory(thermostatObject.accessory, device.name, 'thermostat', thermostatObject.exists);
+            }
+          }
+        }
 
-        // create the accessory handler for the restored accessory
-        // this is imported from `platformAccessory.ts`
-        new ExamplePlatformAccessory(this, existingAccessory);
+        this.accessories.forEach(accessory => {
+          let found = false;
 
-        // it is possible to remove platform accessories at any time using `api.unregisterPlatformAccessories`, eg.:
-        // remove platform accessories when no longer present
-        // this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [existingAccessory]);
-        // this.log.info('Removing existing accessory from cache:', existingAccessory.displayName);
-      } else {
-        // the accessory does not yet exist, so we need to create it
-        this.log.info('Adding new accessory:', device.exampleDisplayName);
+          for (const device of airPatrolObject.entities.pairings.list) {
+            if (accessory.UUID === this.localIdForType(device, 'thermostat') ||
+            accessory.UUID === this.localIdForType(device, 'thermometer')) {
+              found = true;
+            }
+          }
 
-        // create a new accessory
-        const accessory = new this.api.platformAccessory(device.exampleDisplayName, uuid);
-
-        // store a copy of the device object in the `accessory.context`
-        // the `context` property can be used to store any data about the accessory you may need
-        accessory.context.device = device;
-
-        // create the accessory handler for the newly create accessory
-        // this is imported from `platformAccessory.ts`
-        new ExamplePlatformAccessory(this, accessory);
-
-        // link the accessory to your platform
-        this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+          if (found === false) {
+            this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+            this.log.info('Removing existing accessory:', accessory.displayName);
+          }
+        });
       }
+    });
+  }
+
+  public getAccessory(device: List2, type: string) {
+    const existingAccessory = this.accessories.find(accessory => accessory.UUID === this.localIdForType(device, type));
+
+    if (existingAccessory!==undefined) {
+      existingAccessory.context.type=type;
+      existingAccessory.context.device=device;
+
+      return {accessory : existingAccessory, exists : true};
     }
+
+    const accessory = new this.api.platformAccessory(device.name, this.localIdForType(device, type));
+
+    accessory.context.device = device;
+    accessory.context.type = type;
+
+    return {accessory : accessory, exists : false};
+  }
+
+  public addOrRestorAccessory(accessory: PlatformAccessory<Record<string, unknown>>, name: string, type: string, exists: boolean) {
+    if (exists) {
+      this.log.info('Restoring existing accessory:', name +' ('+type+')');
+      this.api.updatePlatformAccessories([accessory]);
+    } else {
+      this.log.info('Adding new accessory:', name +' ('+type+')');
+      this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+    }
+  }
+
+  localIdForType(device:List2, type:string):string {
+    return this.api.hap.uuid.generate(device.id.toString()+'_'+type);
   }
 }
